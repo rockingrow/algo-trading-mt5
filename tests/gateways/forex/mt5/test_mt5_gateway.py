@@ -339,3 +339,60 @@ def test_position_realized_pnl_is_unknown_for_a_ticket_that_is_not_a_number():
 def test_position_realized_pnl_is_unknown_when_history_is_empty():
   mt5 = FakeMt5(deals=[])
   assert _gateway(mt5).get_position_realized_pnl(111) is None
+
+
+# ── Margin pricing (the entry pre-flight's data source) ────────────────────── #
+
+
+def test_calc_margin_asks_the_terminal_for_the_order_it_will_send():
+  mt5 = FakeMt5(margin_per_lot=1200.0)
+  gw = _gateway(mt5)
+  assert gw.calc_margin("XAUUSDc", "LONG", 0.05, 2000.0) == 60.0
+  call = mt5.margin_calls[0]
+  assert call["order_type"] == mt5.ORDER_TYPE_BUY
+  assert (call["symbol"], call["volume"], call["price"]) == ("XAUUSDc", 0.05, 2000.0)
+
+
+def test_calc_margin_prices_a_short_as_a_sell():
+  mt5 = FakeMt5(margin_per_lot=1200.0)
+  assert _gateway(mt5).calc_margin("XAUUSDc", "SHORT", 0.01, 2000.0) == 12.0
+  assert mt5.margin_calls[0]["order_type"] == mt5.ORDER_TYPE_SELL
+
+
+def test_calc_margin_is_none_when_the_terminal_cannot_price_it():
+  """No figure means "unknown", never "zero": the caller must skip its pre-flight
+  rather than conclude the order is free."""
+  assert _gateway(FakeMt5()).calc_margin("XAUUSDc", "LONG", 0.01, 2000.0) is None
+
+
+def test_calc_margin_is_none_when_the_extension_raises():
+  """order_calc_margin raises on a symbol the terminal does not know. A pre-flight
+  that cannot run must not take the entry down with it."""
+
+  def _raise(*args):
+    raise RuntimeError("unknown symbol")
+
+  mt5 = FakeMt5(margin_per_lot=1200.0)
+  mt5.order_calc_margin = _raise
+  assert _gateway(mt5).calc_margin("NOPE", "LONG", 0.01, 2000.0) is None
+
+
+def test_a_rejected_order_reports_the_volume_it_was_rejected_for():
+  """Retcode 10019 ("No money") is a verdict on the volume, and the handler's
+  failure line is all the operator sees of it."""
+  mt5 = FakeMt5(
+    order_results=[make_order_result(retcode=10019, comment="No money")],
+  )
+  result = _gateway(mt5).place_order(
+    symbol="XAUUSDc",
+    side="LONG",
+    volume=0.07,
+    price=2000.0,
+    sl=1990.0,
+    tp=2050.0,
+    magic=42,
+    comment="strat-1 04",
+  )
+  assert result["success"] is False
+  assert result["retcode"] == 10019
+  assert result["volume"] == 0.07

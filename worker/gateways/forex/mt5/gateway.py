@@ -195,6 +195,36 @@ class MT5Gateway(BasePlatformGateway):
 
   # ── Orders ────────────────────────────────────────────────────────────── #
 
+  def calc_margin(
+    self, symbol: str, side: str, volume: float, price: float
+  ) -> Optional[float]:
+    """Margin the terminal quotes for *volume* lots of *symbol* at *price*.
+
+    ``order_calc_margin`` asks the server the same question the trade server
+    asks itself when the order arrives, so the figure includes the symbol's own
+    leverage (metals and indices are commonly capped well below the account's
+    headline leverage). ``None`` on any failure — the pre-flight is a safety net,
+    never a reason to block an entry the terminal simply could not price.
+    """
+    order_type = (
+      self._mt5.ORDER_TYPE_BUY if side == SIDE_LONG else self._mt5.ORDER_TYPE_SELL
+    )
+    try:
+      margin = self._mt5.order_calc_margin(
+        order_type, symbol, float(volume), float(price)
+      )
+    except Exception as e:  # the native extension raises on an unknown symbol
+      logger.warning(f"[calc_margin] order_calc_margin failed for {symbol}: {e}")
+      return None
+
+    if margin is None:
+      logger.warning(
+        f"[calc_margin] Terminal priced no margin for {symbol} vol={volume}: "
+        f"{self._mt5.last_error()}"
+      )
+      return None
+    return float(margin)
+
   def place_order(
     self,
     symbol: str,
@@ -237,9 +267,15 @@ class MT5Gateway(BasePlatformGateway):
 
     if result.retcode != self._mt5.TRADE_RETCODE_DONE:
       logger.error(
-        f"Order rejected, retcode={result.retcode}, comment: {result.comment}"
+        f"Order rejected, retcode={result.retcode}, comment: {result.comment} "
+        f"(symbol={symbol} volume={volume})"
       )
-      return TradeResult.fail(result.comment, retcode=result.retcode)
+      # Carry the refused volume: a rejection is usually *about* the volume
+      # (10019 "No money", 10014 "Invalid volume"), and the handler's failure
+      # line is all the operator gets.
+      return TradeResult.fail(
+        result.comment, retcode=result.retcode, volume=float(volume)
+      )
 
     logger.info(
       f"[place_order] Filled! Ticket: {result.order}, Price: {result.price}, "

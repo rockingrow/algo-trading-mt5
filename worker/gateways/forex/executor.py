@@ -38,6 +38,13 @@ logger = get_logger("worker.gateways.forex.executor")
 
 _ACTION_SIDE = {"LONG": SIDE_LONG, "SHORT": SIDE_SHORT}
 
+# Fraction of free margin a single entry may consume. The margin figure is a
+# snapshot read microseconds before the order leaves: the price moves before it
+# fills and commission is debited on top, so an entry sized to the last cent of
+# free margin still comes back rejected. The headroom also keeps the account off
+# its stop-out level the instant the position opens.
+_MARGIN_USABLE_FRACTION = 0.95
+
 
 class ForexExecutor:
   """Sends trade orders to a forex platform gateway: open, partial-close, SL
@@ -186,10 +193,16 @@ class ForexExecutor:
       spec, side, tick, signal.sl, signal.tp2
     )
 
-    volume = self._resolve_entry_volume(signal, spec, price, sl)
+    requested_volume = self._resolve_entry_volume(signal, spec, price, sl)
+    volume = self._fit_volume_to_margin(symbol, side, requested_volume, price, spec)
+    if volume is None:
+      return TradeResult.fail(
+        f"Insufficient free margin for {requested_volume} lot on {symbol}",
+        volume=requested_volume,
+      )
 
     comment = f"{signal.strategy} {(signal.signal_id or '')[-2:]}".strip()
-    return self._gateway.place_order(
+    result = self._gateway.place_order(
       symbol=symbol,
       side=side,
       volume=volume,
@@ -199,6 +212,14 @@ class ForexExecutor:
       magic=self._magic_for(signal.strategy),
       comment=comment,
     )
+    if volume != requested_volume:
+      # Report the cut the way a broker-widened stop is reported: the lot on the
+      # trade's notification is not the lot sizing asked for, and a reduction
+      # nobody mentions reads as a perfectly normal entry — while it actually
+      # means the risk percentage the message quotes was never applied to this
+      # position, and the capital base is larger than the account.
+      result["requested_volume"] = requested_volume
+    return result
 
   def get_entry_price(self, signal: SignalSchema) -> Optional[float]:
     """The price a market entry for *signal* would fill at right now, or ``None``
@@ -293,6 +314,94 @@ class ForexExecutor:
       f"scale_factor={scale_factor}) sl={sl}{sl_note} → lot={volume}"
     )
     return volume
+
+  # ── Margin pre-flight ─────────────────────────────────────────────────── #
+
+  def _free_margin(self) -> Optional[float]:
+    """Margin the account still has free, or ``None`` when the platform did not
+    report it (the pre-flight is then skipped rather than guessed at)."""
+    account = self._gateway.get_account()
+    if not account:
+      return None
+    # MT5 spells it ``margin_free``; ``free_margin`` is accepted too so a gateway
+    # that models the snapshot the other way round is not silently skipped.
+    for key in ("margin_free", "free_margin"):
+      value = account.get(key)
+      if value is not None:
+        try:
+          return float(value)
+        except (TypeError, ValueError):
+          return None
+    return None
+
+  def _fit_volume_to_margin(
+    self,
+    symbol: str,
+    side: str,
+    volume: float,
+    price: float,
+    spec: Optional[SymbolSpec],
+  ) -> Optional[float]:
+    """The entry volume the account can actually carry, or ``None`` to refuse it.
+
+    Sizing answers "how much risk", never "how much margin": the lot comes out of
+    RISK_PERCENTAGE of the capital base and is clamped only against the broker's
+    volume_min/volume_max. A worker whose CAPITAL is larger than the money really
+    in the account therefore sizes entries it cannot margin — with CAPITAL at its
+    1000 default and a funded-with-40 account, every entry is roughly 25× too big
+    — and each one comes back from the broker as retcode 10019 ("No money"),
+    which costs the trade and says nothing about the lot that caused it.
+
+    So the lot is priced against free margin before the order is sent and, when
+    it does not fit, reduced to the largest step the account can carry: margin is
+    linear in volume for a given symbol, so the shortfall ratio gives that lot
+    directly, and the reduced lot is re-priced rather than assumed to fit. Only
+    when the broker's minimum lot is itself unaffordable is the entry refused,
+    with the numbers in the message.
+
+    Shrinking only ever lowers the position's risk below the configured
+    percentage, never above it. The pre-flight is skipped — *volume* returned
+    unchanged — whenever it cannot be run: a platform that does not price margin,
+    no account snapshot, or no symbol spec to round a replacement lot with.
+    """
+    required = self._gateway.calc_margin(symbol, side, volume, price)
+    if required is None or required <= 0 or spec is None:
+      return volume
+
+    free = self._free_margin()
+    if free is None:
+      return volume
+
+    budget = free * _MARGIN_USABLE_FRACTION
+    if required <= budget:
+      logger.debug(
+        f"[open_position] Margin check {symbol}: lot={volume} needs {required:.2f}, "
+        f"free={free:.2f}."
+      )
+      return volume
+
+    # ``min`` because this is a cap, not a sizing rule: ``normalize_volume``
+    # floors to the broker's step but never returns less than volume_min, so it
+    # can hand back more than was asked for on an already-minimal lot.
+    affordable = min(
+      volume, self._lot_sizer.normalize_volume(spec, volume * budget / required)
+    )
+    affordable_margin = self._gateway.calc_margin(symbol, side, affordable, price)
+    if affordable_margin is not None and affordable_margin > budget:
+      logger.error(
+        f"[open_position] Insufficient free margin on {symbol}: lot {affordable} "
+        f"needs {affordable_margin:.2f} but only {free:.2f} is free "
+        f"({_MARGIN_USABLE_FRACTION:.0%} usable). Entry refused."
+      )
+      return None
+
+    logger.warning(
+      f"[open_position] Lot reduced to fit free margin on {symbol}: {volume} "
+      f"(needs {required:.2f}) → {affordable}, free margin {free:.2f}. "
+      "Risk sizing is running on a capital base larger than the account — check "
+      "CAPITAL / USE_ACCOUNT_EQUITY."
+    )
+    return affordable
 
   # ── TP1: partial close ────────────────────────────────────────────────── #
 

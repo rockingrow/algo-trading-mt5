@@ -16,9 +16,9 @@ from worker.schemas.signal_schema import SignalActionEnum
 from worker.schemas.trade_result import TradeResult
 
 
-def _executor(cfg):
+def _executor(cfg, gateway=None):
   return ForexExecutor(
-    gateway=FakePlatformGateway(),
+    gateway=gateway if gateway is not None else FakePlatformGateway(),
     config=cfg,
     strategy_magic_map={"strat-1": 12345},
   )
@@ -422,3 +422,122 @@ def test_partial_close_passes_the_gateway_pnl_through(config):
 
   res = ex.partial_close_position("XAUUSD", close_volume=0.15, strategy="strat-1")
   assert res["profit"] == pytest.approx(3.4)
+
+
+# ── Margin pre-flight before the order is sent ─────────────────────────────── #
+#
+# Risk sizing knows nothing about margin: it spreads RISK_PERCENTAGE of the
+# capital base over the SL distance and clamps only against volume_min/max. With
+# CAPITAL larger than the money actually in the account (the 1000 default on an
+# account funded with 40), every entry is sized beyond what the account can
+# margin and the broker rejects it with retcode 10019 "No money". The executor
+# prices the lot against free margin first: it shrinks the lot to what fits, or
+# refuses the entry with the figures rather than collecting the rejection.
+#
+# The fixtures below size a 0.02 lot (capital 1000 × 2% = 20 risk over a 1000-point
+# stop on a 1.0/point symbol), so margin_per_lot=3000 makes that lot cost 60.
+
+
+def _margin_gateway(margin_per_lot=None, free_margin=42.0, **overrides):
+  account = {"balance": 42.0, "equity": 42.0}
+  if free_margin is not None:
+    account["margin_free"] = free_margin
+  return FakePlatformGateway(
+    account=account, margin_per_lot=margin_per_lot, **overrides
+  )
+
+
+def test_entry_lot_is_reduced_to_the_lot_free_margin_can_carry(config):
+  """0.02 lots need 60.00; 42.00 free (95% usable = 39.90) carries only 0.01."""
+  gw = _margin_gateway(margin_per_lot=3000.0)
+  res = _executor(config, gw).open_position(
+    make_signal(SignalActionEnum.LONG, sl=1990.0)
+  )
+  assert res["success"] is True
+  assert gw.placed[0]["volume"] == 0.01
+
+
+def test_a_reduced_lot_is_reported_on_the_result(config):
+  """The cut has to reach the trade's notification: the lot that filled is not
+  the lot risk sizing asked for, and only the result carries that fact."""
+  gw = _margin_gateway(margin_per_lot=3000.0)
+  res = _executor(config, gw).open_position(
+    make_signal(SignalActionEnum.LONG, sl=1990.0)
+  )
+  assert res["requested_volume"] == 0.02
+  assert res["volume"] == 0.01
+
+
+def test_an_untouched_lot_reports_no_reduction(config):
+  gw = _margin_gateway(margin_per_lot=3000.0, free_margin=5000.0)
+  res = _executor(config, gw).open_position(
+    make_signal(SignalActionEnum.LONG, sl=1990.0)
+  )
+  assert res.get("requested_volume") is None
+
+
+def test_entry_is_refused_when_even_the_minimum_lot_is_unaffordable(config):
+  """No order is sent at all: 0.01 (the broker minimum) already needs 60.00.
+
+  The refusal names the symbol and carries the volume, so the handler's
+  ``Entry FAILED`` line says what could not be afforded.
+  """
+  gw = _margin_gateway(margin_per_lot=6000.0)
+  res = _executor(config, gw).open_position(
+    make_signal(SignalActionEnum.LONG, sl=1990.0)
+  )
+  assert res["success"] is False
+  assert "margin" in res["comment"].lower()
+  assert res["volume"] == 0.02
+  assert gw.placed == []
+
+
+def test_an_affordable_entry_is_sent_untouched(config):
+  gw = _margin_gateway(margin_per_lot=3000.0, free_margin=5000.0)
+  res = _executor(config, gw).open_position(
+    make_signal(SignalActionEnum.LONG, sl=1990.0)
+  )
+  assert res["success"] is True
+  assert gw.placed[0]["volume"] == 0.02
+
+
+def test_margin_preflight_is_skipped_when_the_platform_cannot_price_margin(config):
+  """A platform with no margin support (calc_margin → None) trades as before."""
+  gw = _margin_gateway(margin_per_lot=None, free_margin=1.0)
+  res = _executor(config, gw).open_position(
+    make_signal(SignalActionEnum.LONG, sl=1990.0)
+  )
+  assert res["success"] is True
+  assert gw.placed[0]["volume"] == 0.02
+
+
+def test_margin_preflight_is_skipped_without_a_free_margin_figure(config):
+  """The pre-flight is a safety net, not a gate: an account snapshot that does
+  not report free margin must not block entries."""
+  gw = _margin_gateway(margin_per_lot=6000.0, free_margin=None)
+  res = _executor(config, gw).open_position(
+    make_signal(SignalActionEnum.LONG, sl=1990.0)
+  )
+  assert res["success"] is True
+  assert gw.placed[0]["volume"] == 0.02
+
+
+def test_margin_is_priced_on_the_side_and_quote_the_order_will_use(config):
+  """A SHORT fills at the bid, so its margin must be priced there too."""
+  gw = _margin_gateway(margin_per_lot=100.0, free_margin=5000.0)
+  _executor(config, gw).open_position(make_signal(SignalActionEnum.SHORT, sl=2010.0))
+  first = gw.margin_calls[0]
+  assert first["side"] == "SHORT"
+  assert first["price"] == 1999.5
+
+
+def test_payload_quantity_entries_are_margin_checked_too(config):
+  """Sizing mode changes where the lot comes from, not whether it can be paid
+  for: a payload-quantity entry goes through the same pre-flight."""
+  cfg = replace(config, volume_decision_enabled=False)
+  gw = _margin_gateway(margin_per_lot=6000.0)
+  res = _executor(cfg, gw).open_position(
+    make_signal(SignalActionEnum.LONG, sl=1990.0, quantity=100)
+  )
+  assert res["success"] is False
+  assert gw.placed == []

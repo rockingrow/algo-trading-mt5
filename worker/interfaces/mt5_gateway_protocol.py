@@ -27,6 +27,13 @@ class Mt5GatewayProtocol(Protocol):
   def account_info(self) -> Optional[Any]: ...
   def positions_get(self, symbol: str = ...) -> Optional[List[Any]]: ...
   def order_send(self, request: dict) -> Optional[Any]: ...
+  # Margin one order would lock up, in account currency — read before the order
+  # is sent so an entry the account cannot carry is shrunk or refused here rather
+  # than rejected by the broker with retcode 10019 ("No money"). ``None`` when the
+  # terminal cannot price it.
+  def order_calc_margin(
+    self, order_type: int, symbol: str, volume: float, price: float
+  ) -> Optional[float]: ...
   # Deal history, filtered by a single deal (``ticket``) or by every deal of one
   # position (``position``). This is where MT5 books the realized PnL of a close —
   # ``order_send`` returns none — so the gateway reads it back from here.
