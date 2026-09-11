@@ -159,7 +159,12 @@ class FakeMt5:
     order_results: Optional[List] = None,
     symbols=None,
     deals: Optional[List] = None,
+    margin_per_lot=None,
   ):
+    # Margin the terminal quotes per lot. None models a terminal that cannot
+    # price it (order_calc_margin returns None), which is the default so the
+    # caller's margin pre-flight stays out of the way of unrelated tests.
+    self._margin_per_lot = margin_per_lot
     self._symbol_info = symbol_info if symbol_info is not None else make_symbol_info()
     self._tick = tick if tick is not None else make_tick()
     self._positions = list(positions or [])
@@ -176,6 +181,7 @@ class FakeMt5:
     self.sent_requests: List[dict] = []
     self.selected: List[tuple] = []
     self.deal_lookups: List[dict] = []
+    self.margin_calls: List[dict] = []
 
   def symbols_get(self, group=None):
     return self._symbols
@@ -195,6 +201,19 @@ class FakeMt5:
 
   def positions_get(self, symbol=None):
     return list(self._positions)
+
+  def order_calc_margin(self, order_type, symbol, volume, price):
+    self.margin_calls.append(
+      {
+        "order_type": order_type,
+        "symbol": symbol,
+        "volume": volume,
+        "price": price,
+      }
+    )
+    if self._margin_per_lot is None:
+      return None
+    return self._margin_per_lot * volume
 
   def order_send(self, request):
     self.sent_requests.append(request)
@@ -288,8 +307,13 @@ class FakePlatformGateway:
     close_results=None,
     modify_results=None,
     position_pnl=None,
+    margin_per_lot=None,
   ):
     self._position_pnl = position_pnl
+    # Margin required per lot. None (the default) models a platform that cannot
+    # price margin, so ForexExecutor's pre-flight is skipped and every test
+    # written before it existed keeps its original behaviour.
+    self._margin_per_lot = margin_per_lot
     self._spec = spec if spec is not None else make_symbol_spec()
     self._tick = tick if tick is not None else Tick(bid=1999.5, ask=2000.0)
     self._positions = list(positions or [])
@@ -302,6 +326,7 @@ class FakePlatformGateway:
     self.placed: List[dict] = []
     self.closed: List[dict] = []
     self.modified: List[dict] = []
+    self.margin_calls: List[dict] = []
 
   # ── Lifecycle (stubs) ─────────────────────────────────────────────────── #
   def connect(self):
@@ -340,6 +365,14 @@ class FakePlatformGateway:
 
   def get_positions(self, symbol=None):
     return list(self._positions)
+
+  def calc_margin(self, symbol, side, volume, price):
+    self.margin_calls.append(
+      {"symbol": symbol, "side": side, "volume": volume, "price": price}
+    )
+    if self._margin_per_lot is None:
+      return None
+    return self._margin_per_lot * volume
 
   def get_position_realized_pnl(self, position_ticket):
     """Total realized PnL the reconciler reads for a closed position."""

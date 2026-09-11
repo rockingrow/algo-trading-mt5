@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-09-11
+
+### Added
+
+- **FOREX entries are priced against free margin before they are sent.** Risk sizing answers *how much risk*, never *how much margin*: `LotSizer` spreads `RISK_PERCENTAGE` of the capital base over the SL distance and clamps the result only against the broker's `volume_min`/`volume_max`, so nothing in the order path ever asked whether the account could carry the lot. A worker whose `CAPITAL` is larger than the money really in the account therefore sized entries it could not margin — with `CAPITAL` at its `1000` default on an account funded with 40, every entry was roughly 25× too big — and the broker rejected each one with retcode **10019 `No money`**, a rejection that cost the trade and named neither the lot nor the reason.
+
+  `ForexExecutor._fit_volume_to_margin` now runs between sizing and sending: it asks the platform what the lot would lock up (new optional `BasePlatformGateway.calc_margin` hook; `MT5Gateway` answers with `order_calc_margin`, which prices the symbol's own leverage rather than the account's headline figure — metals and indices are commonly capped well below it) and compares that against the account's free margin. A lot that fits is sent untouched; a lot that does not is **reduced** to the largest step the account can carry — margin is linear in volume for one symbol, so the shortfall ratio gives that lot directly, and the reduced lot is re-priced rather than assumed to fit — and the reduction is logged with both figures; and when not even the broker's minimum lot fits, the entry is **refused before any order is placed**, with the numbers in the failure message. Only 95% of free margin counts as usable, because the margin figure is a snapshot read microseconds before the order leaves: the price moves before it fills and commission is debited on top, and the headroom also keeps the account off its stop-out level the instant the position opens.
+
+  Shrinking a lot only ever lowers the position's risk below `RISK_PERCENTAGE`, never above it, so the guard cannot widen risk. It is a safety net rather than a gate: whenever it cannot be run — a platform that does not price margin (the hook's default `None`), no account snapshot, no free-margin figure in it, no symbol spec to round a replacement lot with — the entry is sent unchanged, exactly as before. A shrunk lot is a symptom, not a fix, and the log line says so: risk sizing is running on a capital base larger than the account, which `USE_ACCOUNT_EQUITY=true` (size from live equity) or a corrected `CAPITAL` is what actually resolves. No new setting; CRYPTO is untouched, its notional/step filters already being an exchange-side equivalent.
+
+- **Per-position equity sizing (`position.use_equity_sizing`).** The signal payload may now carry a `use_equity_sizing` boolean, so the broker can decide *per position* how the entry is sized instead of the worker deciding once for every trade it will ever take. `true` means "size this entry from the account's **real** equity" — the payload's `quantity` is ignored and the volume is computed from the resolved risk percent against live equity (`ForexExecutor._resolve_capital` / `CryptoExecutor._risk_capital`), which is the only base that tracks an account that has grown or drawn down since `CAPITAL` was written into `.env`. `false` means "use `quantity` as sent". The flag is absent-safe: a payload without it behaves exactly as before. When equity sizing is on but the account equity cannot be read, the entry still falls back to the broker's **minimum** lot/qty rather than silently sizing off the wrong base — the pre-existing guard, now reached through the per-signal decision.
+
+### Changed
+
+- **A failed entry now says what it failed on.** `SignalHandler._handle_entry`'s `Entry FAILED` line carried only `retcode` and the broker's comment, so the one question a rejection raises — *which lot, on which symbol?* — could only be answered by correlating it with the sizing line further up the log. It now reports the action, strategy, symbol and volume alongside the retcode, and `MT5Gateway.place_order` carries the refused volume back on the failed `TradeResult` so there is something to report: the broker's most common rejections (10019 `No money`, 10014 `Invalid volume`) are verdicts on the volume itself.
+- **`USE_ACCOUNT_EQUITY` is now tri-state and outranks the payload.** It was a plain bool defaulting to `false`; it is now `Optional[bool]` defaulting to **unset**, and it is the highest-priority input to entry sizing:
+  - `true` → every entry is sized from live account equity, ignoring `quantity`;
+  - `false` → every entry is sized from `position.quantity`, ignoring `use_equity_sizing`;
+  - unset (the line commented out of `.env`) → the signal's own `position.use_equity_sizing` decides;
+  - neither set → the legacy behaviour is untouched: `VOLUME_DECISION_ENABLED` decides, and risk sizing uses the fixed `CAPITAL`.
+
+  That last rule is what keeps existing deployments byte-identical, and it is why the default had to become `None` rather than stay `False`: with the new semantics an explicit `false` *means* payload-quantity, so leaving it as the default would have flipped every worker that never set the variable out of risk sizing. An operator who wants the old explicit "risk-size off `CAPITAL`, not equity" simply leaves it unset. The resolution lives in one place — `ExecutionConfig.resolve_equity_sizing` (the tri-state decision) and `ExecutionConfig.uses_payload_quantity` (that decision folded with `VOLUME_DECISION_ENABLED`) — so both executors, the cycle event's `auto_volume`, and the notification's risk/gear line read the same answer and cannot drift apart.
+- **Notifications follow the resolved mode, not the env var.** The startup/settings banner renders `USE_ACCOUNT_EQUITY: PER SIGNAL` when the variable is unset (`ENABLED`/`DISABLED` when set), and the ⚙ gear on an `Order Filled` volume — which marks a volume the worker sized itself — is now decided per signal, so an equity-sized entry under `VOLUME_DECISION_ENABLED=false` is marked as self-sized and a payload-quantity entry under `VOLUME_DECISION_ENABLED=true` is not.
+- CRYPTO's "Missing quantity" guard now fires whenever the resolved mode is payload-quantity, rather than only when `VOLUME_DECISION_ENABLED` is off — a signal that asks for `quantity` sizing and carries no quantity fails cleanly instead of sending a zero-size order.
+
 ## [1.2.2] - 2026-08-21
 
 ### Fixed
@@ -218,6 +243,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0] - Previous Release
 
+[1.2.3]: https://github.com/rockingrow/algo-trading-worker/compare/v1.2.3...dev
 [1.2.2]: https://github.com/rockingrow/algo-trading-worker/compare/v1.2.2...dev
 [1.2.1]: https://github.com/rockingrow/algo-trading-worker/compare/v1.2.1...dev
 [1.2.0]: https://github.com/rockingrow/algo-trading-worker/compare/v1.2.0...v1.2.1

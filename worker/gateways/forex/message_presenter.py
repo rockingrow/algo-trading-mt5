@@ -49,7 +49,7 @@ class ForexMessagePresenter(BaseMessagePresenter):
       f"{ForexMessagePresenter._volume_decision_line(s)}"
       f"CAPITAL: <b>{s.get('capital')} {s.get('capital_currency', '')}</b>\n"
       f"{ForexMessagePresenter._risk_percentage_line(s)}"
-      f"USE_ACCOUNT_EQUITY: <b>{'ENABLED' if s.get('use_account_equity', False) else 'DISABLED'}</b>\n"
+      f"{ForexMessagePresenter._use_account_equity_line(s)}"
       f"{ForexMessagePresenter._tp1_percent_line(s)}"
       f"{ForexMessagePresenter._tp1_be_line(s)}"
       f"{ForexMessagePresenter._max_open_orders_line(s)}"
@@ -91,7 +91,7 @@ class ForexMessagePresenter(BaseMessagePresenter):
     # VOLUME_DECISION_ENABLED=false the lot comes straight from signal.quantity,
     # so the icon must be dropped — mirrors _risk_line, which the processor
     # likewise suppresses when volume decision is off.
-    auto_sized = bool((settings_dict or {}).get("volume_decision_enabled", False))
+    auto_sized = ForexMessagePresenter._auto_sized(signal, settings_dict)
     volume = format_volume(result.get("volume"), auto_calculated=auto_sized)
     qty_suffix = ForexMessagePresenter._tp1_qty_suffix(signal, settings_dict)
     return _box(
@@ -100,7 +100,8 @@ class ForexMessagePresenter(BaseMessagePresenter):
       f"Strategy: <b>{signal.strategy}</b>\n"
       f"Action: <b>{signal.action.value}</b>\n"
       f"Price: <b>{result.get('price')}</b>\n"
-      f"Volume: <b>{volume}{qty_suffix}</b>\n"
+      f"Volume: <b>{volume}{qty_suffix}</b>"
+      f"{ForexMessagePresenter._margin_cut_note(result)}\n"
       f"Ticket: <b>{result.get('ticket')}</b>\n"
       f"Source Ticket: <b>{pos_ticket}</b>\n"
       f"{ForexMessagePresenter._exit_pnl_line(signal, result)}"
@@ -111,6 +112,21 @@ class ForexMessagePresenter(BaseMessagePresenter):
       f"{_DIVIDER}\n"
       f"{footer}"
     )
+
+  @staticmethod
+  def _margin_cut_note(result: dict) -> str:
+    """Flag a lot the margin pre-flight had to reduce, or '' for a normal entry.
+
+    Same reasoning as :meth:`_stops_lines`: the number on the message is not the
+    one the worker sized, and a reduction nobody mentions reads as an ordinary
+    entry — while it means the risk percentage quoted below it was never applied
+    to this position, because the capital base is larger than the account can
+    margin.
+    """
+    requested = result.get("requested_volume")
+    if requested is None:
+      return ""
+    return f" {WARNING} (sized {requested}, cut to fit free margin)"
 
   @staticmethod
   def _stops_lines(signal: SignalSchema, result: dict) -> str:
