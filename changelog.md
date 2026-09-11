@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Every action line of the cycle message carries the timezone of its time, and can be rendered in the operator's own zone.** The timeline in box 2 printed a bare `2026-09-11 10:10:02` under each action — the instant was UTC, but nothing on the line said so, while the broker's own report of the same trade quotes its times in the operator's zone (`… (UTC+7)`). Two clocks, neither labelled: reading the worker's `LONG`, `TP1` and `TP2` next to the broker's close made the trade look hours off, and there was no way to tell an unlabelled time in the wrong zone from a genuinely late fill.
+
+  `cycle_presenter._timestamp` now always labels the zone it rendered in — `2026-09-11 10:10:02 (UTC)` — and renders in the zone chosen by the new **`TELEGRAM_MESSAGE_TIMEZONE`** (a UTC offset in **hours**, default `0`): `7` → `2026-09-11 17:10:02 (UTC+7)`, `-4` → `(UTC-4)`, `5.5` → `(UTC+5:30)`. Set it to the zone the broker reports in and the two reports of one trade read off the same clock. Nothing is stored differently: cycle event timestamps stay UTC in SQLite and on the `TRADE` subject, so this changes display only, and a value that is unset, non-numeric or outside ±14h falls back to UTC rather than failing a render — a message with a surprising offset is still a message. A stored timestamp with no offset is read as UTC (what the worker writes), and a `timestamp` that is not a time at all is passed through **unlabelled** rather than being given an invented zone.
+
+### Notes
+
+- The **subscribed/closed broadcast message** shown in the request (`[🏁CLOSED] … Close price: … Updated: 2026-09-11 18:17:05 (UTC+7)`, with its `Actions:` list) is rendered by the **broker**, not by this worker — no string in this repository produces those lines. Adding the entry `LONG`/`SHORT` line to it, and putting `<action> (datetime + timezone)` on each of its action lines, is a change in the broker's presenter; the worker already publishes everything that message needs (`action`, `opened_price`, `closed_price`, `created_at`, `updated_at` on every `PositionEvent`).
+
 ## [1.2.3] - 2026-09-11
 
 ### Added
