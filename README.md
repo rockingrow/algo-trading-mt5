@@ -552,12 +552,12 @@ Realized: +154.65 📈                ┘ nothing has closed yet).
 ----------------------------------  │ Box 2 — the timeline, one entry per
 ✅ LONG — Filled                    │ action, appended as the trade moves.
 Price: 2340.15 | Volume: 0.5 lot ⚙️ │ The icon is the *outcome*, so a TP1
-2026-04-10 22:55:00                 │ the broker refused never looks like a
+2026-04-10 22:55:00 (UTC)           │ the broker refused never looks like a
                                     │ TP1 that hit. A close also reports the
 🎯 TP1 — Filled                     │ PnL it booked, in the same format the
 Price: 2350.4 | Volume: 0.25 lot (TP1 50%)
-PnL: +51.25 📈                      │ standalone close message used.
-2026-04-11 15:05:00                ┘
+PnL: +51.25 📈                      │ standalone close message used. Every
+2026-04-11 15:05:00 (UTC)          ┘ time carries its zone (see below).
 ----------------------------------
 ⚙️ Settings                        ┐
 ----------------------------------  │ Box 3 — the worker configuration this
@@ -572,6 +572,8 @@ Signal: 9f2c4b7e18a3d605            ┘
 The headline status is **the position's**, not the action's: a TP1 the broker refused leaves an `OPENED` position `OPENED`, and once a position is closed (`TP2`/`SL`/`R_SL`/`FLATTED`/…) a late or replayed action can never advertise it as live again. An admin `FLAT` closes out the position's own cycle rather than opening a new message.
 
 Each chat entry keeps its `_<topic id>` suffix, so a cycle lands in the same forum topic as every other notification, and two topics of the same group each own their own message.
+
+Every action line in box 2 ends with the time that action happened **and the zone it is quoted in** — `2026-04-11 15:05:00 (UTC)`. Times are stored in UTC; `TELEGRAM_MESSAGE_TIMEZONE` (a UTC offset in **hours**, default `0`) chooses the zone they are rendered in, and the label follows it: `7` → `2026-04-11 22:05:00 (UTC+7)`, `-4` → `(UTC-4)`, `5.5` → `(UTC+5:30)`. Set it to the zone the broker reports in and both reports of the same trade read off one clock. An offset that is unset, non-numeric or outside ±14h falls back to UTC rather than failing the render, and a stored timestamp that carries no offset is read as UTC — which is what the worker writes.
 
 Delivery, retries and the `TELEGRAM_CYCLE_ENABLED` toggle are covered in [CycleNotificationJob](#cyclenotificationjob--one-telegram-message-per-trade-workerjobscycle_notification_jobpy).
 

@@ -368,6 +368,15 @@ class TelegramSettings(BaseSettings):
   # cycle to group them by.
   cycle_enabled: bool = _opt(True, "TELEGRAM_CYCLE_ENABLED", "telegram_cycle_enabled")
 
+  # Display timezone for the timestamps in that message, as a UTC offset in
+  # hours: ``7`` renders UTC+7, ``-4`` UTC-4, ``5.5`` UTC+5:30. Timestamps are
+  # stored in UTC and only their rendering changes; the offset is printed beside
+  # every time, so an operator reading the message never has to guess which zone
+  # it is in — and can line it up with the broker's own report.
+  message_timezone: float = _opt(
+    0.0, "TELEGRAM_MESSAGE_TIMEZONE", "telegram_message_timezone"
+  )
+
   # ── Telegram error-log hook ──────────────────────────────────────
   # When enabled (and enabled is true), log records at ERROR level or above are
   # forwarded to Telegram. The dedicated log bot/chat is kept separate from the

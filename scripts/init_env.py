@@ -119,6 +119,9 @@ DESCRIPTIONS = {
     "(blank -> falls back to TELEGRAM_WORKER_LOG_CHAT_IDS)"
   ),
   "TELEGRAM_CYCLE_ENABLED": "One message per trade, edited as it progresses",
+  "TELEGRAM_MESSAGE_TIMEZONE": (
+    "UTC offset in hours for the timestamps in that message (7 -> UTC+7)"
+  ),
 }
 
 KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
