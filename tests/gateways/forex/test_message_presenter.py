@@ -87,6 +87,32 @@ def test_order_filled_volume_gear_follows_volume_decision():
   assert "0.1 lot" in no_settings and GEAR not in no_settings
 
 
+# ── A lot the margin pre-flight had to cut ─────────────────────────────────── #
+#
+# The reduction means the quoted risk percentage was never applied to this
+# position, so it has to be visible beside the volume rather than only in the log.
+
+
+def test_order_filled_flags_a_lot_cut_to_fit_margin():
+  signal = make_signal(SignalActionEnum.LONG)
+  msg = ForexMessagePresenter.order_filled(
+    signal,
+    {"price": 2000.0, "volume": 0.01, "ticket": 5, "requested_volume": 0.07},
+    5,
+    "FOOTER",
+  )
+  assert "0.01 lot" in msg
+  assert "sized 0.07, cut to fit free margin" in msg
+
+
+def test_order_filled_says_nothing_about_margin_on_a_normal_entry():
+  signal = make_signal(SignalActionEnum.LONG)
+  msg = ForexMessagePresenter.order_filled(
+    signal, {"price": 2000.0, "volume": 0.07, "ticket": 5}, 5, "FOOTER"
+  )
+  assert "cut to fit" not in msg
+
+
 # ── Stops shown are the ones actually placed ───────────────────────────────── #
 #
 # The broker's minimum stop distance can move SL/TP, so reading the signal's own

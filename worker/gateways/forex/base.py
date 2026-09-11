@@ -120,6 +120,20 @@ class BasePlatformGateway(ABC):
   def get_account_footer(self) -> str:
     """Human-readable account footer appended to notifications."""
 
+  def calc_margin(
+    self, symbol: str, side: str, volume: float, price: float
+  ) -> Optional[float]:
+    """Margin *volume* of *symbol* would lock up at *price*, in account currency.
+
+    Optional hook, used as an order pre-flight: a platform that cannot price it
+    returns ``None`` (the default) and the caller then submits the order without
+    a margin check, exactly as it did before this hook existed. Returning a real
+    figure lets :class:`~worker.gateways.forex.executor.ForexExecutor` shrink or
+    refuse an entry the account cannot carry instead of collecting the broker's
+    "No money" rejection.
+    """
+    return None
+
   # ── Market data / rules ───────────────────────────────────────────────── #
 
   @abstractmethod

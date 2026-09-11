@@ -320,7 +320,9 @@ class SignalHandler:
     else:
       logger.error(
         f"[SignalHandler._handle_entry] Entry FAILED | "
-        f"retcode={result.get('retcode')} comment={result.get('comment')}"
+        f"action={signal.action.value} strategy={strategy} symbol={symbol} "
+        f"vol={result.get('volume')} retcode={result.get('retcode')} "
+        f"comment={result.get('comment')}"
       )
 
     if forced_closed:

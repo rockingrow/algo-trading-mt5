@@ -100,7 +100,8 @@ class ForexMessagePresenter(BaseMessagePresenter):
       f"Strategy: <b>{signal.strategy}</b>\n"
       f"Action: <b>{signal.action.value}</b>\n"
       f"Price: <b>{result.get('price')}</b>\n"
-      f"Volume: <b>{volume}{qty_suffix}</b>\n"
+      f"Volume: <b>{volume}{qty_suffix}</b>"
+      f"{ForexMessagePresenter._margin_cut_note(result)}\n"
       f"Ticket: <b>{result.get('ticket')}</b>\n"
       f"Source Ticket: <b>{pos_ticket}</b>\n"
       f"{ForexMessagePresenter._exit_pnl_line(signal, result)}"
@@ -111,6 +112,21 @@ class ForexMessagePresenter(BaseMessagePresenter):
       f"{_DIVIDER}\n"
       f"{footer}"
     )
+
+  @staticmethod
+  def _margin_cut_note(result: dict) -> str:
+    """Flag a lot the margin pre-flight had to reduce, or '' for a normal entry.
+
+    Same reasoning as :meth:`_stops_lines`: the number on the message is not the
+    one the worker sized, and a reduction nobody mentions reads as an ordinary
+    entry — while it means the risk percentage quoted below it was never applied
+    to this position, because the capital base is larger than the account can
+    margin.
+    """
+    requested = result.get("requested_volume")
+    if requested is None:
+      return ""
+    return f" {WARNING} (sized {requested}, cut to fit free margin)"
 
   @staticmethod
   def _stops_lines(signal: SignalSchema, result: dict) -> str:
